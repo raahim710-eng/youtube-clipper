@@ -1,0 +1,86 @@
+# ---- Secrets & credentials (never commit) ----
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+client_secret*.json
+credentials*.json
+oauth-token*.json
+service-account*.json
+
+# ---- Local data: database & media ----
+/data/
+/storage/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+
+# ---- Downloaded AI models & caches ----
+/models/
+.cache/
+
+# ---- Node / Next.js ----
+node_modules/
+.next/
+out/
+build/
+dist/
+next-env.d.ts
+*.tsbuildinfo
+.turbo/
+.vercel/
+src/generated/
+
+# ---- Testing ----
+coverage/
+test-results/
+playwright-report/
+blob-report/
+playwright/.cache/
+
+# ---- Python (media-worker) ----
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+*.egg-info/
+
+# ---- Media files outside storage (avoid accidental commits of large files) ----
+/test-media/
+*.mp4
+*.mov
+*.mkv
+*.webm
+*.avi
+*.wav
+*.mp3
+!media-worker/tests/fixtures/*.wav
+
+# ---- Logs ----
+/logs/
+*.log
+npm-debug.log*
+
+# ---- OS / editor ----
+.DS_Store
+Thumbs.db
+desktop.ini
+.idea/
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+
+# ---- Claude Code local settings ----
+.claude/settings.local.json
+
+/src/generated/prisma
+
+# ---- Backups (npm run backup) ----
+/backups/

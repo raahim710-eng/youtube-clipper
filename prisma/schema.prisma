@@ -1,0 +1,724 @@
+// Prisma schema for the AI YouTube Employee.
+// Documentation of every table lives in DATABASE_SCHEMA.md — update it with every migration.
+// Tables are added in the phase that needs them (see ROADMAP.md).
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+// ---------------------------------------------------------------------------
+// Authentication (Phase 2) — shape required by Better Auth's Prisma adapter.
+// Do not rename fields; Better Auth reads and writes them directly.
+// ---------------------------------------------------------------------------
+
+model User {
+  id                String             @id
+  name              String
+  email             String             @unique
+  emailVerified     Boolean            @default(false)
+  image             String?
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @updatedAt
+  sessions          Session[]
+  accounts          Account[]
+  settings          UserSettings?
+  auditLogs         AuditLog[]
+  uploads           Upload[]
+  videos            Video[]
+  jobs              Job[]
+  shorts            Short[]
+  packagingSets     PackagingSet[]
+  thumbnails        Thumbnail[]
+  channels          YouTubeChannel[]
+  publications      Publication[]
+  generatorProjects GeneratorProject[]
+
+  @@map("user")
+}
+
+model Session {
+  id        String   @id
+  expiresAt DateTime
+  token     String   @unique
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  ipAddress String?
+  userAgent String?
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("session")
+}
+
+model Account {
+  id                    String    @id
+  accountId             String
+  providerId            String
+  userId                String
+  user                  User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  accessToken           String?
+  refreshToken          String?
+  idToken               String?
+  accessTokenExpiresAt  DateTime?
+  refreshTokenExpiresAt DateTime?
+  scope                 String?
+  password              String?
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+
+  @@index([userId])
+  @@map("account")
+}
+
+model Verification {
+  id         String   @id
+  identifier String
+  value      String
+  expiresAt  DateTime
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([identifier])
+  @@map("verification")
+}
+
+// ---------------------------------------------------------------------------
+// App tables (Phase 2)
+// ---------------------------------------------------------------------------
+
+/// Non-secret preferences, one row per user. Columns for later phases are added in those phases.
+model UserSettings {
+  userId            String   @id
+  user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  /// Transcription language: "auto" (detect) or a code such as "en". (Phase 4)
+  defaultLanguage   String   @default("auto")
+  /// Transcribe new videos automatically after processing. (Phase 4)
+  autoTranscribe    Boolean  @default(true)
+  /// Clip analysis provider: ollama | gemini | openai_compatible | none (speech patterns only, no AI). (Phase 4)
+  llmProvider       String   @default("ollama")
+  /// Caption style for new Shorts (JSON, see src/lib/shorts/caption-style.ts); null = built-in default. (Phase 5)
+  captionStyleJson  String?
+  /// Creator voice/tone guidance used for every packaging request (Phase 6)
+  channelStyleNotes String?
+  /// Channel preselected when publishing (Phase 7)
+  defaultChannelId  String?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@map("user_settings")
+}
+
+/// Security-relevant events. detailsJson must never contain secrets.
+model AuditLog {
+  id          String   @id @default(cuid())
+  userId      String?
+  user        User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  /// e.g. auth.setup_completed, auth.login, auth.login_failed, auth.session_revoked
+  action      String
+  detailsJson String   @default("{}")
+  ipAddress   String?
+  createdAt   DateTime @default(now())
+
+  @@index([userId, createdAt])
+  @@map("audit_log")
+}
+
+// ---------------------------------------------------------------------------
+// Video library & job system (Phase 3)
+// ---------------------------------------------------------------------------
+
+/// A chunked, resumable upload in progress. Chunks are written straight into
+/// storage/uploads/tmp/{id}/data.bin; a marker file per finished chunk records progress.
+model Upload {
+  id               String   @id @default(cuid())
+  userId           String
+  user             User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  /// Display only — never used as a file path.
+  originalFilename String
+  /// Validated, lower-case extension without the dot, e.g. "mp4".
+  extension        String
+  totalBytes       BigInt
+  chunkSize        Int
+  totalChunks      Int
+  /// in_progress | completed | cancelled | expired | failed
+  status           String   @default("in_progress")
+  error            String?
+  videoId          String?  @unique
+  video            Video?   @relation(fields: [videoId], references: [id], onDelete: SetNull)
+  expiresAt        DateTime
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  @@index([userId, status])
+  @@index([status, expiresAt])
+  @@map("upload")
+}
+
+/// A source video in the library.
+model Video {
+  id               String            @id @default(cuid())
+  userId           String
+  user             User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title            String
+  notes            String?
+  /// upload | generated (Phase 9)
+  sourceType       String            @default("upload")
+  /// Generated videos: stock footage and narration credits, added to the description when publishing (GEN-06)
+  creditsText      String?
+  /// processing | ready | failed
+  status           String            @default("processing")
+  /// User-safe explanation when status is "failed".
+  errorMessage     String?
+  originalFilename String
+  /// Paths are relative to STORAGE_DIR.
+  sourcePath       String
+  previewPath      String?
+  posterPath       String?
+  sizeBytes        BigInt
+  durationMs       Int?
+  width            Int?
+  height           Int?
+  fps              Float?
+  videoCodec       String?
+  audioCodec       String?
+  /// Container from the validated extension, e.g. "mp4", "mkv".
+  container        String
+  processedAt      DateTime?
+  createdAt        DateTime          @default(now())
+  updatedAt        DateTime          @updatedAt
+  upload           Upload?
+  transcript       Transcript?
+  clipCandidates   ClipCandidate[]
+  shorts           Short[]
+  packagingSets    PackagingSet[]
+  thumbnails       Thumbnail[]
+  publications     Publication[]
+  generatorOutput  GeneratorProject? @relation("GeneratorOutput")
+  generatorScenes  GeneratorScene[]
+
+  @@index([userId, createdAt])
+  @@index([userId, status])
+  @@map("video")
+}
+
+/// Background work, claimed by workers through /api/internal/jobs (ARCHITECTURE.md §3).
+model Job {
+  id              String    @id @default(cuid())
+  userId          String
+  user            User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  /// e.g. media.ingest — see TECHNICAL_SPEC.md §6
+  type            String
+  /// queued | running | succeeded | failed | cancelled
+  status          String    @default("queued")
+  /// Lower runs first.
+  priority        Int       @default(100)
+  payloadJson     String
+  resultJson      String?
+  progress        Int       @default(0)
+  progressMessage String?
+  /// Link for display (no foreign key), e.g. entityType "video".
+  entityType      String?
+  entityId        String?
+  attempts        Int       @default(0)
+  maxAttempts     Int       @default(3)
+  /// Not claimable before this time (retry back-off).
+  runAfter        DateTime  @default(now())
+  lockedBy        String?
+  leaseExpiresAt  DateTime?
+  cancelRequested Boolean   @default(false)
+  /// User-safe message and machine-readable code for failures.
+  error           String?
+  errorCode       String?
+  startedAt       DateTime?
+  finishedAt      DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@index([status, type, priority, createdAt])
+  @@index([entityType, entityId])
+  @@index([userId, createdAt])
+  @@map("job")
+}
+
+/// Last time each worker process checked in (shown on Settings › System status).
+model WorkerHeartbeat {
+  workerId         String   @id
+  /// python | node
+  kind             String
+  version          String
+  capabilitiesJson String   @default("{}")
+  lastSeenAt       DateTime
+
+  @@map("worker_heartbeat")
+}
+
+// ---------------------------------------------------------------------------
+// Transcription & AI Clip Finder (Phase 4)
+// ---------------------------------------------------------------------------
+
+/// One transcript per video. Word-level timings live in a JSON file in storage.
+model Transcript {
+  id                  String    @id @default(cuid())
+  videoId             String    @unique
+  video               Video     @relation(fields: [videoId], references: [id], onDelete: Cascade)
+  /// processing | ready | failed
+  status              String    @default("processing")
+  /// e.g. faster-whisper
+  provider            String
+  /// e.g. base
+  model               String?
+  /// Detected or chosen language code, e.g. "en".
+  language            String?
+  languageProbability Float?
+  /// videos/{videoId}/transcript.json (relative to STORAGE_DIR)
+  filePath            String?
+  /// Plain text, for search and prompts.
+  fullText            String?
+  wordCount           Int       @default(0)
+  segmentCount        Int       @default(0)
+  errorMessage        String?
+  completedAt         DateTime?
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  @@map("transcript")
+}
+
+/// A suggested (or manually created) moment that could become a Short.
+model ClipCandidate {
+  id             String    @id @default(cuid())
+  videoId        String
+  video          Video     @relation(fields: [videoId], references: [id], onDelete: Cascade)
+  /// Always snapped to transcript word boundaries — never invented by the AI.
+  startMs        Int
+  endMs          Int
+  /// The transcript words inside [startMs, endMs].
+  transcriptText String
+  /// Final ranking score 0–100 (null for manual clips).
+  score          Int?
+  /// Measurable speech-pattern score 0–100 (pace, pauses, loudness, questions).
+  heuristicScore Int?
+  /// AI rating 0–100 (null when no AI was used).
+  aiScore        Int?
+  title          String
+  hook           String?
+  reason         String?
+  /// explanation | surprising_fact | story | strong_reaction | engaging_statement | other
+  category       String?
+  /// ai | heuristic | manual
+  origin         String
+  /// suggested | accepted | rejected
+  status         String    @default("suggested")
+  /// Who produced it, e.g. provider "ollama", model "qwen2.5:1.5b".
+  provider       String?
+  model          String?
+  reviewedAt     DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+  short          Short?
+
+  @@index([videoId, score])
+  @@index([videoId, status])
+  @@map("clip_candidate")
+}
+
+// ---------------------------------------------------------------------------
+// Shorts editor (Phase 5)
+// ---------------------------------------------------------------------------
+
+/// A vertical 9:16 Short cut from a video. Times are in source-video milliseconds.
+model Short {
+  id               String         @id @default(cuid())
+  userId           String
+  user             User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  videoId          String
+  video            Video          @relation(fields: [videoId], references: [id], onDelete: Cascade)
+  /// The accepted clip it was made from (one Short per clip).
+  clipCandidateId  String?        @unique
+  clipCandidate    ClipCandidate? @relation(fields: [clipCandidateId], references: [id], onDelete: SetNull)
+  title            String
+  startMs          Int
+  endMs            Int
+  /// auto | center | blur | manual
+  reframeMode      String         @default("auto")
+  /// Crop centre for manual framing, 0–1 of the source width.
+  manualX          Float          @default(0.5)
+  /// Face tracking for auto framing: none | processing | ready | failed
+  reframeStatus    String         @default("none")
+  reframeError     String?
+  /// media.reframe result: {startMs, endMs, keyframes: [{tMs, x}], shots, warnings, …}
+  reframeJson      String?
+  captionsEnabled  Boolean        @default(true)
+  /// [{startMs, endMs, text}] — editable
+  captionsJson     String         @default("[]")
+  /// Caption style (preset + font, size, colours, background, position)
+  captionStyleJson String
+  /// Optional title/hook text shown in the first seconds (SHORT-08)
+  hookText         String?
+  /// standard | high
+  exportQuality    String         @default("standard")
+  /// draft | rendering | ready | failed
+  status           String         @default("draft")
+  renderError      String?
+  /// shorts/{id}/render-*.mp4 (relative to STORAGE_DIR)
+  outputPath       String?
+  outputSizeBytes  BigInt?
+  outputDurationMs Int?
+  /// Hash of the settings used for the last export; a different current hash means "out of date" (SHORT-07)
+  renderSignature  String?
+  renderElapsedMs  Int?
+  renderedAt       DateTime?
+  createdAt        DateTime       @default(now())
+  updatedAt        DateTime       @updatedAt
+
+  packagingSets PackagingSet[]
+  thumbnails    Thumbnail[]
+  publications  Publication[]
+
+  @@index([userId, updatedAt])
+  @@index([videoId])
+  @@map("short")
+}
+
+// ---------------------------------------------------------------------------
+// AI packaging (Phase 6)
+// ---------------------------------------------------------------------------
+
+/// One generation of packaging for a video or a Short. Every regeneration is a new set; older sets stay.
+model PackagingSet {
+  id                    String      @id @default(cuid())
+  userId                String
+  user                  User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  /// Exactly one of videoId / shortId is set.
+  videoId               String?
+  video                 Video?      @relation(fields: [videoId], references: [id], onDelete: Cascade)
+  shortId               String?
+  short                 Short?      @relation(fields: [shortId], references: [id], onDelete: Cascade)
+  /// processing | ready | failed
+  status                String      @default("processing")
+  error                 String?
+  /// Creator's notes for this generation (audience, tone, keywords)
+  inputNotes            String?
+  provider              String?
+  model                 String?
+  /// Editable working copy. [{text, flags[], edited}]
+  titlesJson            String      @default("[]")
+  description           String      @default("")
+  /// [{tag, selected}]
+  hashtagsJson          String      @default("[]")
+  /// [{text, flags[], edited}]
+  hooksJson             String      @default("[]")
+  /// [{headline, composition, emotion, frameMs, flags[]}]
+  thumbnailConceptsJson String      @default("[]")
+  /// [{startMs, title}] (already included in the description)
+  chaptersJson          String      @default("[]")
+  warningsJson          String      @default("[]")
+  /// Exactly what the AI returned (after limits), to show which fields the creator changed
+  generatedJson         String?
+  selectedTitle         Int         @default(0)
+  selectedHook          Int         @default(0)
+  /// The creator's saved choice for this video/Short (at most one preferred set per target)
+  preferred             Boolean     @default(false)
+  savedAt               DateTime?
+  createdAt             DateTime    @default(now())
+  updatedAt             DateTime    @updatedAt
+  thumbnails            Thumbnail[]
+
+  @@index([videoId, createdAt])
+  @@index([shortId, createdAt])
+  @@index([userId, updatedAt])
+  @@map("packaging_set")
+}
+
+/// A thumbnail image: a video frame, a frame with a headline (mock-up), or the creator's own upload.
+model Thumbnail {
+  id             String        @id @default(cuid())
+  userId         String
+  user           User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  /// Exactly one of videoId / shortId is set.
+  videoId        String?
+  video          Video?        @relation(fields: [videoId], references: [id], onDelete: Cascade)
+  shortId        String?
+  short          Short?        @relation(fields: [shortId], references: [id], onDelete: Cascade)
+  packagingSetId String?
+  packagingSet   PackagingSet? @relation(fields: [packagingSetId], references: [id], onDelete: SetNull)
+  /// frame | mockup | upload — never an AI-generated image
+  origin         String
+  /// processing | ready | failed
+  status         String        @default("processing")
+  error          String?
+  /// thumbnails/{id}.jpg (relative to STORAGE_DIR)
+  filePath       String?
+  width          Int
+  height         Int
+  sizeBytes      Int?
+  sourceFrameMs  Int?
+  headline       String?
+  /// The creator's chosen thumbnail for this video/Short
+  selected       Boolean       @default(false)
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+
+  publications Publication[]
+
+  @@index([videoId, createdAt])
+  @@index([shortId, createdAt])
+  @@map("thumbnail")
+}
+
+// ---------------------------------------------------------------------------
+// YouTube integration (Phase 7)
+// ---------------------------------------------------------------------------
+
+/// A YouTube channel the owner connected with Google OAuth. Tokens live in OAuthCredential.
+model YouTubeChannel {
+  id                String           @id @default(cuid())
+  userId            String
+  user              User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  youtubeChannelId  String           @unique
+  title             String
+  handle            String?
+  thumbnailUrl      String?
+  uploadsPlaylistId String?
+  /// active | reauth_required | revoked
+  status            String           @default("active")
+  /// Space-separated scopes Google granted.
+  grantedScopes     String
+  connectedAt       DateTime         @default(now())
+  lastSyncedAt      DateTime?
+  createdAt         DateTime         @default(now())
+  updatedAt         DateTime         @updatedAt
+  credential        OAuthCredential?
+  publications      Publication[]
+
+  @@index([userId])
+  @@map("youtube_channel")
+}
+
+/// Encrypted OAuth tokens (AES-256-GCM, SECURITY.md §3.3). Only src/server/youtube/oauth.ts reads this table.
+model OAuthCredential {
+  channelId            String         @id
+  channel              YouTubeChannel @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  /// v1:<iv>:<tag>:<ciphertext> (base64)
+  accessTokenEnc       String
+  refreshTokenEnc      String
+  accessTokenExpiresAt DateTime
+  keyVersion           Int            @default(1)
+  updatedAt            DateTime       @updatedAt
+
+  @@map("oauth_credential")
+}
+
+/// One upload of a video or Short to a connected channel.
+model Publication {
+  id                     String         @id @default(cuid())
+  userId                 String
+  user                   User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  channelId              String
+  channel                YouTubeChannel @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  /// Exactly one of videoId / shortId is set.
+  videoId                String?
+  video                  Video?         @relation(fields: [videoId], references: [id], onDelete: SetNull)
+  shortId                String?
+  short                  Short?         @relation(fields: [shortId], references: [id], onDelete: SetNull)
+  thumbnailId            String?
+  thumbnail              Thumbnail?     @relation(fields: [thumbnailId], references: [id], onDelete: SetNull)
+  /// What was uploaded, for display after the source is deleted.
+  sourceTitle            String
+  /// Relative path of the uploaded file (exported Short or original video).
+  filePath               String
+  title                  String
+  description            String
+  tagsJson               String         @default("[]")
+  categoryId             String
+  /// private | unlisted | public — what was requested
+  privacyStatus          String
+  /// What YouTube reported after the upload
+  actualPrivacyStatus    String?
+  publishAt              DateTime?
+  madeForKids            Boolean
+  containsSyntheticMedia Boolean
+  /// queued | uploading | uploaded | scheduled | failed | cancelled
+  status                 String         @default("queued")
+  uploadProgress         Int            @default(0)
+  bytesUploaded          BigInt         @default(0)
+  /// Resumable-upload session URI, encrypted (it allows uploading to this video for a while).
+  uploadSessionEnc       String?
+  youtubeVideoId         String?
+  error                  String?
+  /// Notes such as "thumbnail couldn't be set"
+  warningsJson           String         @default("[]")
+  uploadedAt             DateTime?
+  createdAt              DateTime       @default(now())
+  updatedAt              DateTime       @updatedAt
+
+  @@index([userId, createdAt])
+  @@index([channelId])
+  @@map("publication")
+}
+
+/// YouTube API usage per Google quota day (resets at midnight Pacific time), to stay inside the free limits.
+model ApiQuotaUsage {
+  id          String   @id @default(cuid())
+  /// YYYY-MM-DD in America/Los_Angeles
+  projectDate String
+  /// default | videos.insert | search.list | analytics
+  bucket      String
+  units       Int      @default(0)
+  updatedAt   DateTime @updatedAt
+
+  @@unique([projectDate, bucket])
+  @@map("api_quota_usage")
+}
+
+// ---------------------------------------------------------------------------
+// Original video generator (Phase 9)
+// ---------------------------------------------------------------------------
+
+/// A video made from a topic: script → narration → real moving footage → rendered MP4 (GEN-01…08).
+model GeneratorProject {
+  id                 String           @id @default(cuid())
+  userId             String
+  user               User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  topic              String
+  /// One of GENERATOR_NICHES (src/lib/constants.ts)
+  niche              String
+  audience           String?
+  /// One of GENERATOR_TONES
+  tone               String
+  /// Extra guidance for the script (facts to include, things to avoid)
+  notes              String?
+  targetDurationSec  Int
+  /// 16:9 | 9:16
+  aspectRatio        String
+  /// 720 | 1080 (short side of the frame)
+  resolution         Int              @default(1080)
+  language           String           @default("English")
+  /// Text-to-speech voice name; null = the provider's default
+  voice              String?
+  /// Speaking rate -5…5 (0 = normal)
+  voiceRate          Int              @default(0)
+  captionsEnabled    Boolean          @default(true)
+  /// standard | high
+  quality            String           @default("standard")
+  /// draft | scripting | editing | rendering | ready
+  status             String           @default("draft")
+  /// Last failure of a script or render, in plain words
+  error              String?
+  title              String?
+  hook               String?
+  /// Who wrote the script, e.g. ollama / qwen2.5:1.5b
+  scriptProvider     String?
+  scriptModel        String?
+  scriptWarningsJson String           @default("[]")
+  /// The creator confirmed they reviewed the script (GEN-02); narration and footage start after this
+  scriptApprovedAt   DateTime?
+  /// generator/{id}/music.* (user upload)
+  musicPath          String?
+  musicVolumeDb      Int              @default(-18)
+  /// The latest rendered video in the library
+  outputVideoId      String?          @unique
+  outputVideo        Video?           @relation("GeneratorOutput", fields: [outputVideoId], references: [id], onDelete: SetNull)
+  /// Credits for the description (stock creators, licences, voice)
+  creditsText        String?
+  renderElapsedMs    Int?
+  renderedAt         DateTime?
+  createdAt          DateTime         @default(now())
+  updatedAt          DateTime         @updatedAt
+  scenes             GeneratorScene[]
+
+  @@index([userId, updatedAt])
+  @@map("generator_project")
+}
+
+/// One scene: a piece of narration and the footage shown while it plays.
+model GeneratorScene {
+  id              String           @id @default(cuid())
+  projectId       String
+  project         GeneratorProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  /// 0-based position (reorderable)
+  order           Int
+  narration       String
+  /// 2–4 concrete keywords for the footage search
+  visualQuery     String
+  onScreenText    String?
+  /// Script estimate at 150 words/minute
+  estimatedMs     Int?
+  /// none | processing | ready | failed
+  narrationStatus String           @default("none")
+  narrationError  String?
+  /// generator/{projectId}/narration/{sceneId}-{n}.wav
+  audioPath       String?
+  audioDurationMs Int?
+  /// [[startMs, endMs, word]] relative to the scene's audio
+  wordTimingsJson String?
+  /// engine (reported by the voice) | estimated (spread over the audio)
+  timingSource    String?
+  /// The text the audio was made from; differs from `narration` after an edit → narrate again
+  narratedText    String?
+  /// stock | library | upload (null = none chosen yet)
+  footageSource   String?
+  /// none | searching | ready | failed
+  footageStatus   String           @default("none")
+  footageError    String?
+  stockAssetId    String?
+  stockAsset      StockAsset?      @relation(fields: [stockAssetId], references: [id], onDelete: SetNull)
+  /// Up to 5 stock candidates [{provider, providerAssetId, …, filePath|null}]
+  candidatesJson  String           @default("[]")
+  libraryVideoId  String?
+  libraryVideo    Video?           @relation(fields: [libraryVideoId], references: [id], onDelete: SetNull)
+  /// generator/{projectId}/clips/{sceneId}.{ext} (user upload)
+  customClipPath  String?
+  /// Where in the chosen clip the scene starts
+  clipStartMs     Int              @default(0)
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+
+  @@index([projectId, order])
+  @@map("generator_scene")
+}
+
+/// A stock video from Pexels or Pixabay, shared by all projects. Files live in stock-cache/.
+model StockAsset {
+  id              String           @id @default(cuid())
+  /// pexels | pixabay
+  provider        String
+  providerAssetId String
+  pageUrl         String
+  creatorName     String
+  creatorUrl      String?
+  /// The file chosen for download (official media host only)
+  downloadUrl     String
+  previewImageUrl String?
+  /// stock-cache/{provider}/{providerAssetId}.mp4
+  filePath        String
+  width           Int
+  height          Int
+  durationMs      Int
+  licenseName     String
+  downloadedAt    DateTime?
+  createdAt       DateTime         @default(now())
+  scenes          GeneratorScene[]
+
+  @@unique([provider, providerAssetId])
+  @@map("stock_asset")
+}
+
+// ---------------------------------------------------------------------------
+// Hardening (Phase 10)
+// ---------------------------------------------------------------------------
+
+/// One row with a fixed id, written when the owner account is created: two simultaneous first-run
+/// sign-ups can't both insert it, so the app can never get a second owner.
+model OwnerLock {
+  id        String   @id
+  createdAt DateTime @default(now())
+
+  @@map("owner_lock")
+}

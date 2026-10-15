@@ -1,0 +1,14 @@
+# Generated or vendored code
+src/generated/
+src/components/ui/
+prisma/migrations/
+package-lock.json
+.next/
+node_modules/
+data/
+storage/
+coverage/
+playwright-report/
+test-results/
+# Hand-written documentation keeps its own formatting
+*.md
